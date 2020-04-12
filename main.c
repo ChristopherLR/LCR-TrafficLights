@@ -1,9 +1,64 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 
+/* AVR definitions*/
+#define FOSC 16000000
+#define I2C_FREQ 40000
+//#define TWI_BIT_RATE ((FOSC/I2C_FREQ)-16)/2
+#define TWI_BIT_RATE 193
+
+/* Addresses for PORT EXPANDER
+ * Assumes IOCON.BANK = 0 */
+#define IODIRA   0x00
+#define IODIRB   0x01
+#define IPOLA    0x02
+#define IPOLB    0x03
+#define GPINTENA 0x04
+#define GPINTENB 0x05
+#define DEFVALA  0x06
+#define DEFVALB  0x07
+#define INTCONA  0x08
+#define INTCONB  0x09
+#define IOCON    0x0A
+#define GPPUA    0x0C
+#define GPPUB    0x0D
+#define INTFA    0x0E
+#define INTFB    0x0F
+#define INTCAPA  0x10
+#define INTCAPB  0x11
+#define GPIOA    0x12
+#define GPIOB    0x13
+#define OLATA    0x14
+#define OLATB    0x15
+
+/* TWI Definitions
+ * MTX - Master Transmitter
+ * MRX - Master Receiver
+ * Ref to Addresses from Microchip AN_1981*/
+#define WRITE         0
+#define READ          1
+#define OWN_ADR       60
+#define SUCCESS       0xFF
+#define START         0x08
+#define REP_START     0x10
+#define MTX_ADR_ACK   0x18
+#define MTX_ADR_NACK  0x20
+#define MTX_DATA_ACK  0x28
+#define MTX_DATA_NACK 0x30
+#define MRX_ADR_ACK   0x40
+#define MRX_ADR_NACK  0x48
+#define MRX_DATA_ACK  0x50
+#define MRX_DATA_NACK 0x58
+
+/* Encapsulating the twi transmission into a struct */
+typedef struct {
+	unsigned char address;    // Address of slave
+	unsigned char num_bytes;  // Number of bytes in data
+	unsigned char *data;      // Pointer to the data for transmission
+} twi_frame;
+
 /* Scales to a standard of 1 sec, so scaler 0.5 would be half second
- * Be careful because the underlying value is 16 bits
- */
+ * Be careful because the underlying value is 16 bits */
 void configure_clock1(const float scaler);
 void configure_int0();
 void configure_int1();
@@ -12,10 +67,20 @@ void configure_port_expander();
 char spi_master_transmit(char);
 char spi_send(char, char);
 char spi_read(char, char);
+char twi_init();
+unsigned char twi_start();
+void twi_wait();
+unsigned char twi_send_addr(unsigned char);
+unsigned char twi_send_byte(unsigned char);
+unsigned char twi_send_data(twi_frame);
+unsigned char lcd_init();
+void ERROR();
+
+
 
 int main() {
 
-  DDRD  |= (1 << PD5) | (1 << PD6);
+	DDRD  |= (1 << PD5) | (1 << PD6) | (1 << PD7);
 	PORTD |= (1 << PD2) | (1 << PD3);
 
 	PORTD = 0;
@@ -25,13 +90,20 @@ int main() {
 	configure_int1();
 	configure_spi();
 	configure_port_expander();
+	//twi_init();
+
+	unsigned char state = SUCCESS;
+
+	//state = lcd_init();
+
+	if(state == SUCCESS)
+		ERROR();
 
 	spi_send(0x14, 0x00);
 	/* Enable Global interrupts */
 	sei();
 
-  while (1) {
-	}
+	while (1) {}
 	return 0;
 };
 
@@ -161,19 +233,19 @@ char spi_read(char cmd, char data){
 
 void configure_port_expander(){
 	/* IOCON */
-	spi_send(0x0A, 0b01000000);
+	spi_send(IOCON, 0b01000000);
 	/* IODIRA Port A DDR */
-	spi_send(0x00, 0x00);
+	spi_send(IODIRA, 0x00);
 	/* IODIRB Port B DDR */
-	spi_send(0x01, 0xFF);
+	spi_send(IODIRB, 0xFF);
 	/* GPPUB Port B pullups */
-	spi_send(0x0D, 0xFF);
+	spi_send(GPPUB, 0xFF);
 	/* GPINTENB Interrupt on change */
-	spi_send(0x05, 0b00000001);
+	spi_send(GPINTENB, 0b00000001);
 	/* INTCONB Compare DEFVAL=1 or Prev-Val=0 */
-	spi_send(0x09, 0b00000001);
+	spi_send(INTCONB, 0b00000001);
 	/* DEFVAL - sets the default val */
-	spi_send(0x07, 0b00000001);
+	spi_send(DEFVALB, 0b00000001);
 };
 
 void configure_clock1(const float scaler){
@@ -187,52 +259,153 @@ void configure_clock1(const float scaler){
 	 */
 	TIMSK1 = 0b00000100;
 
-	/* TCCR1B
-	 * Timer 1 Control Reg B
-	 * Bit 7: ICNC1 - Input Capture Noise Canceler
-	 * Bit 6: ICES1 - Input Capture Edge Select
-	 * Bit 4-3: WGM13/12 - Waveform Gen Mode
-	 * Bit 2-1: Clock Select
-	 */
+	/* TCCR1B - Timer 1 Control Reg B
+	 * [ICNC1][ICES1][-][WGM13][WGM12][CS12][CS11][CS10]
+	 * ICNC1 - Input Capture Noise Canceler
+	 * ICES1 - Input Capture Edge Select
+	 * WGM - Waveform Gen Mode - Setting PWM/Normal
+	 * CS - Clock Select - Pre-scaling */
 	TCCR1B = 0b00000000; /* Stopping the clock */
 
-	/* TCCR1A
-	 * Timer 1 Control Reg A
-	 * Bit 7-6: COM1A(1-0) - Compare Output mode channel A
-	 * Bit 5-4: COM1B(1-0) - ** for A
-	 * Bit 1-0: WGM1(1-0) - Wave Gen Mode
-	 */
+	/* TCCR1A - Timer 1 Control Reg A
+	 * [COM1A1][COM1A0][COM1B1][COM1B0][-][-][WGM11][WGM10]
+	 * COM1A - Compare Output mode channel A
+	 * COM1B - ** for A
+	 * WGM - Wave Gen Mode */
 	TCCR1A = 0b00000000;
 
 	/* OCR1B - (OCR1AH & OCR1AL) - 16 Bit
 	 * Output Compare Register A
 	 * Bit 15-0: Output to compare to timer
-	 * 16,000,000/1024 = 15625 Ticks per sec
-	 */
+	 * 16,000,000/1024 = 15625 Ticks per sec */
 	OCR1B = 15625*scaler;
 
-	/* TIFRx
-	 * Timer Interrupt Flag Registers
-	 * Bit 7-3: Nothing
-	 * Bit 2: OCFxB - Compare Match B
-	 * Bit 1: OCFxA - Compare Match A
-	 * Bit 0: TOVx - Timer Overflow flag
-	 */
+	/* TIFRx - Timer Interrupt Flag Registers
+	 * [-][-][-][-][-][OCFxB][OCFxA][TOVx]
+	 * OCFxB - Compare Match B
+	 * OCFxA - Compare Match A
+	 * TOVx - Timer Overflow flagc */
 	TIFR1 = 0b00000100;
 
 	/* To Set WGM = 0000 and Prescaler to 1024
-	 * TCCR1B = [00][0][00][101]
-	 * TCCR1C = [FOC1A][FOC1B][5-0: Nothing]
-	 */
+	 * TCCR1B = [00][-][00][101]
+	 * TCCR1C = [FOC1A][FOC1B][-][-][-][-][-][-]
+	 * FOC - Force Output Compare for A/B */
 	TCCR1B = 0b00000101;
 	TCCR1C = 0b00000000;
 
 	/* TCNT1 - (TCNT1H & TCNT1L) - 16 Bit
 	 * Timer/Counter 1
-	 * Bit 15-0: The value of the timer
-	 */
+	 * Bit 15-0: The value of the timer */
 	TCNT1 = 0;
 
 };
 
+char twi_init(){
+	/* TWAR - TWI Address */
+	TWAR = OWN_ADR;
 
+	/* TWBR - TWI Bit Rate Reg
+	 * SCL = Fosc / (16 + 2(TWBR).(TWPS))
+	 * We want SCL = 40KHz
+	 * Fosc = 16MHz
+	 * TWBR = 193 */
+	TWBR = TWI_BIT_RATE;
+
+	TWCR = (1 << TWEN);
+	return 1;
+};
+
+unsigned char twi_start(){
+	/* TWCR - TWI Control Register
+	 * [TWINT][TWEA][TWSTA][TWSTO][TWWC][TWEN][-][TWIE]
+	 * TWI Interrupt = 1 to clear flag, set when job is done
+	 * TWI Enable Ack = 1 ack pulse gen when conditions met
+	 * TWI STArt = 1 -> Generates start condition when avail
+	 * TWI STop = 1 -> Gen stop cond, cleared automaticall
+	 * TWI Write Collision = 1 when writing to TWDR and TWINT low
+	 * TWI Enable Bit = Enable TWI transmission
+	 * TWI Interrupt Enable = */
+	TWCR = (1<<TWINT) | (1<<TWSTA) | (1<<TWEN);
+
+	twi_wait();
+
+	/* TWSR - TWI Status Register
+	 * [TWS7][TWS6][TWS5][TWS4][TWS3][-][TWPS1][TWPS0]
+	 * TWI Status = 5 Bit status of TWI
+	 * TWI PreScaler = sets the pre-scaler (1, 4, 16, 64) */
+	if((TWSR != START)&&(TWSR != REP_START)) return TWSR;
+
+	return SUCCESS;
+};
+
+unsigned char twi_send_data(twi_frame tx_frame){
+	unsigned char state = SUCCESS;
+
+	if( tx_frame.address != OWN_ADR){
+		state = twi_start();
+		if(state == SUCCESS)
+			state = twi_send_addr(tx_frame.address);
+
+		if(!(tx_frame.address & READ)){
+			// Checking if the address includes read or write byte
+			for(unsigned char i = 0; ((i<tx_frame.num_bytes)&&(state=SUCCESS)); i++)
+				state = twi_send_byte(tx_frame.data[i]);
+		}
+	}
+
+	/* Sending the stop condition */
+	TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);
+
+	return state;
+};
+
+unsigned char twi_send_byte(unsigned char data){
+
+	twi_wait();
+
+	TWDR = data; // Send Data across twi
+	TWCR = (1 << TWINT) | (1 << TWEN); // Start transmission
+
+	twi_wait();
+	if(TWSR != MTX_DATA_ACK) return TWSR; // Checking for ack
+	return SUCCESS;
+};
+
+unsigned char twi_send_addr(unsigned char addr){
+
+	twi_wait();
+
+	TWDR = addr; //send Address across twi
+	TWCR = (1 << TWINT) | (1 << TWEN); // Start transmission
+	twi_wait();
+	if((TWSR != MTX_ADR_ACK)&&(TWSR != MRX_ADR_ACK)) return TWSR; // Checking for ack
+	return SUCCESS;
+
+};
+
+void twi_wait(){
+	while(!(TWCR & (1 << TWINT)));
+};
+
+void ERROR(){
+	PORTD |= 0b10000000;
+};
+/*
+unsigned char lcd_init(){
+	unsigned char state = SUCCESS;
+	unsigned char tmp[3];
+	twi_frame twi_frame;
+
+	twi_frame.address = 0x27 + 0x27;
+	twi_frame.num_bytes = 3;
+	twi_frame.data = tmp;
+	twi_frame.data[0] = 0x30;
+	twi_frame.data[1] = 0x30;
+	twi_frame.data[2] = 0x30;
+
+	state = twi_send_data(twi_frame);
+
+	return state;
+};
+*/
