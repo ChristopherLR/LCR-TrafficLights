@@ -6,6 +6,7 @@
  */
 void configure_clock1(const float scaler);
 void configure_int0();
+void configure_int1();
 void configure_spi();
 void configure_port_expander();
 char spi_master_transmit(char);
@@ -14,16 +15,18 @@ char spi_read(char, char);
 
 int main() {
 
-  DDRD  |= (1 << PD5);
-	PORTD |= (1 << PD2);
+  DDRD  |= (1 << PD5) | (1 << PD6);
+	PORTD |= (1 << PD2) | (1 << PD3);
 
 	PORTD = 0;
 
 	configure_clock1(1);
 	configure_int0();
+	configure_int1();
 	configure_spi();
 	configure_port_expander();
 
+	spi_send(0x14, 0x00);
 	/* Enable Global interrupts */
 	sei();
 
@@ -33,8 +36,12 @@ int main() {
 };
 
 ISR(INT0_vect){
-	PORTD ^= (1 << PC5);
-	spi_send(0x14, 0xFF);
+	PORTD ^= (1 << PD5);
+};
+
+ISR(INT1_vect){
+	char PE_B = spi_read(0x13,0);
+	PORTD ^= (1 << PD6);
 };
 
 ISR(TIMER1_COMPB_vect){
@@ -45,12 +52,6 @@ ISR(TIMER1_COMPB_vect){
 	 */
 	TCNT1 = 0;
 	spi_send(0x14, 0x00);
-	char PE_B = spi_read(0x13,0);
-	if(PE_B & 0b00000001) {
-		PORTD = (1 << PC5);
-	} else {
-		PORTD = 0;
-	}
 };
 
 void configure_int0(){
@@ -72,6 +73,27 @@ void configure_int0(){
 	 */
 	EICRA |= 0b00000010;
 };
+
+void configure_int1(){
+	/* EIMSK - External Interrupt Mask
+	 * Bit 7-2: Nothing
+	 * Bit 1: INT1
+	 * Bit 0: INT0
+	 */
+	EIMSK |= 0b00000010;
+
+	/* EICRA - External Int Control Reg
+	 * [-][-][-][-][ISC11][ISC10][ISC01][ISC00]
+	 * ISC1(1-0) - INT1
+	 * ISC0(1-0) - INT0
+	 * ISCx: 00 low level generate int req
+	 * ISCx: 01 logical change generates
+	 * ISCx: 10 Falling edge
+	 * ISCx: 11 Rising edge
+	 */
+	EICRA |= 0b00001000;
+};
+
 
 void configure_spi(){
 	/* DDRB - Data Direction B
@@ -116,6 +138,7 @@ char spi_send(char cmd, char data){
 	spi_master_transmit(cmd);
 	retv = spi_master_transmit(data);
 
+	/* Set Bit 2 (SS) */
 	PORTB |= 0b00000100;
 	return retv;
 };
@@ -131,14 +154,26 @@ char spi_read(char cmd, char data){
 	spi_master_transmit(cmd);
 	retv = spi_master_transmit(data);
 
+	/* Set Bit 2 (SS) */
 	PORTB |= 0b00000100;
 	return retv;
 };
 
 void configure_port_expander(){
+	/* IOCON */
+	spi_send(0x0A, 0b01000000);
+	/* IODIRA Port A DDR */
 	spi_send(0x00, 0x00);
+	/* IODIRB Port B DDR */
 	spi_send(0x01, 0xFF);
+	/* GPPUB Port B pullups */
 	spi_send(0x0D, 0xFF);
+	/* GPINTENB Interrupt on change */
+	spi_send(0x05, 0b00000001);
+	/* INTCONB Compare DEFVAL=1 or Prev-Val=0 */
+	spi_send(0x09, 0b00000001);
+	/* DEFVAL - sets the default val */
+	spi_send(0x07, 0b00000001);
 };
 
 void configure_clock1(const float scaler){
