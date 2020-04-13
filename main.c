@@ -31,29 +31,28 @@
 #define OLATA    0x14
 #define OLATB    0x15
 
-/* TWI Definitions
- * MTX - Master Transmitter
- * MRX - Master Receiver
- * Ref to Addresses from Microchip AN_1981*/
-#define WRITE         0
-#define READ          1
+/* TWI Definitions */
 #define OWN_ADR       00
-#define SUCCESS       0xFF
-#define START         0x08
-#define REP_START     0x10
-#define MTX_ADR_ACK   0x18
-#define MTX_ADR_NACK  0x20
-#define MTX_DATA_ACK  0x28
-#define MTX_DATA_NACK 0x30
-#define MRX_ADR_ACK   0x40
-#define MRX_ADR_NACK  0x48
-#define MRX_DATA_ACK  0x50
-#define MRX_DATA_NACK 0x58
+#define SUCCESS       0x53
+#define FAIL          0x46
+#define START         0x10
+#define ADR_ACK       0x18
+#define DATA_ACK      0x28
+
+/* LCD Definitions */
+#define BACKLIGHT     0x08
+#define DATA_BYTE     0x01
+#define LCD_ADDRESS   0x27
+#define LCD_CLEAR     0x01
+#define LCD_POS       0x80
+#define FOUR_BIT_MODE 0x28
+
 
 /* Encapsulating the twi transmission into a struct */
 typedef struct {
 	unsigned char address;    // Address of slave
 	unsigned char num_bytes;  // Number of bytes in data
+	unsigned char lower;      // Setting the Backlight/Data
 	unsigned char *data;      // Pointer to the data for transmission
 } twi_frame;
 
@@ -75,8 +74,9 @@ unsigned char twi_send_addr(unsigned char);
 unsigned char twi_send_byte(unsigned char, unsigned char);
 unsigned char twi_send_nibble(unsigned char);
 unsigned char twi_send_data(twi_frame);
+unsigned char lcd_position(unsigned char);
 unsigned char lcd_init();
-unsigned char lcd_write_str();
+unsigned char lcd_write_str(char*, unsigned char, unsigned char);
 void ERROR();
 
 
@@ -95,62 +95,18 @@ int main() {
 	configure_port_expander();
 	twi_init();
 
+	spi_send(0x14, 0x00);
 	unsigned char state = SUCCESS;
 
-	//state = lcd_init();
+	state = lcd_init();
 
-	//if(state == SUCCESS)
-	//	ERROR();
-
-	twi_start();
-	twi_send_addr(0x27 + 0x27);
-	twi_send_nibble(0x00);
-	twi_stop();
-	twi_start();
-	twi_send_addr(0x27 + 0x27);
-	twi_send_nibble(0x30);
-	twi_stop();
-	twi_start();
-	twi_send_addr(0x27 + 0x27);
-	twi_send_nibble(0x30);
-	twi_stop();
-	twi_start();
-	twi_send_addr(0x27 + 0x27);
-	twi_send_nibble(0x30);
-	twi_stop();
-	twi_start();
-	twi_send_addr(0x27 + 0x27);
-	twi_send_nibble(0x28);
-	twi_stop();
-
-	unsigned char init_str[2];
-	init_str[0] = 0x0C;
-	init_str[1] = 0x01;
-	twi_start();
-	twi_send_addr(0x27 + 0x27);
-	twi_send_nibble(0x00 | 0x08);
-	twi_send_nibble(0xC0 | 0x08);
-	twi_send_nibble(0x00 | 0x08);
-	twi_send_nibble(0x10 | 0x08);
-	//twi_send_byte(init_str[1], 0x08);
-	twi_stop();
-
-	unsigned char* init_str_1 = "HI";
-	twi_start();
-	twi_send_addr(0x27 + 0x27);
-	twi_send_byte(0x80, 0x08);
-	twi_stop();
-	twi_start();
-	twi_send_addr(0x27 + 0x27);
-	twi_send_byte(init_str_1[0], 0x09);
-	twi_send_byte(init_str_1[1], 0x09);
-	twi_stop();
-
-	spi_send(0x14, 0x00);
 	/* Enable Global interrupts */
 	sei();
 
-	//lcd_write_str();
+	unsigned char str[] = "HELLO WORLD";
+	state = lcd_write_str(str, 0x40, 11);
+
+	if(state != SUCCESS) ERROR();
 
 	while (1) {}
 	return 0;
@@ -394,7 +350,7 @@ unsigned char twi_start(){
 	 * [TWS7][TWS6][TWS5][TWS4][TWS3][-][TWPS1][TWPS0]
 	 * TWI Status = 5 Bit status of TWI
 	 * TWI PreScaler = sets the pre-scaler (1, 4, 16, 64) */
-	if((TWSR != START)&&(TWSR != REP_START)) return TWSR;
+	if(TWSR != START) return FAIL;
 
 	return SUCCESS;
 };
@@ -405,19 +361,19 @@ void twi_stop(){
 };
 
 unsigned char twi_send_data(twi_frame tx_frame){
-	unsigned char state = SUCCESS;
+	unsigned char state, i;
+	state = SUCCESS;
 
-	if( tx_frame.address != OWN_ADR){
-		state = twi_start();
-		if(state == SUCCESS)
-			state = twi_send_addr(tx_frame.address);
-
-		if(!(tx_frame.address & READ)){
-			// Checking if the address includes read or write byte
-			for(unsigned char i = 0; ((i<tx_frame.num_bytes)&&(state=SUCCESS)); i++)
-				state = twi_send_byte(tx_frame.data[i],0);
-		}
+	state = twi_start();
+	if(state == SUCCESS){
+		state = twi_send_addr(tx_frame.address);
+	} else {
+		twi_stop();
+		return state;
 	}
+
+  for(i = 0; ((i<tx_frame.num_bytes)&&(state=SUCCESS)); i++)
+				state = twi_send_byte(tx_frame.data[i],tx_frame.lower);
 
 	twi_stop();
 
@@ -426,14 +382,16 @@ unsigned char twi_send_data(twi_frame tx_frame){
 
 unsigned char twi_send_byte(unsigned char data,
 														unsigned char lower){
-
+	unsigned char state = SUCCESS;
 	unsigned char first_nib  = (data & 0xF0) | lower;
 	unsigned char second_nib = ((data << 4)&0xF0) | lower;
 
-	twi_send_nibble(first_nib);
-	twi_send_nibble(second_nib);
+	state = twi_send_nibble(first_nib);
+	if(state != SUCCESS) return state;
+	state = twi_send_nibble(second_nib);
+	if(state != SUCCESS) return state;
 
-	return SUCCESS;
+	return state;
 };
 
 unsigned char twi_send_nibble(unsigned char nibble){
@@ -442,13 +400,13 @@ unsigned char twi_send_nibble(unsigned char nibble){
 	TWCR = (1 << TWINT) | (1 << TWEN); // Start transmission
 	twi_wait();
 
-	//if((TWSR&0xF8) != 0x28) return TWSR;
+	if((TWSR&0xF8) != DATA_ACK) return TWSR;
 
 	TWDR = tx & 0xFB;
 	TWCR = (1 << TWINT) | (1 << TWEN); // Start transmission
 	twi_wait();
 
-	//if((TWSR&0xF8) != 0x28) return TWSR;
+	if((TWSR&0xF8) != DATA_ACK) return TWSR;
 	return SUCCESS;
 };
 
@@ -456,10 +414,10 @@ unsigned char twi_send_addr(unsigned char addr){
 
 	twi_wait();
 
-	TWDR = addr; //send Address across twi
+	TWDR = addr + addr; //send Address across twi
 	TWCR = (1 << TWINT) | (1 << TWEN); // Start transmission
 	twi_wait();
-	if((TWSR != MTX_ADR_ACK)&&(TWSR != MRX_ADR_ACK)) return TWSR; // Checking for ack
+	if((TWSR&0xF8) != ADR_ACK) return TWSR; // Checking for ack
 	return SUCCESS;
 
 };
@@ -475,48 +433,59 @@ void ERROR(){
 unsigned char lcd_init(){
 
 	unsigned char state = SUCCESS;
-	unsigned char tmp[3];
-	twi_frame twi_frame;
 
-	twi_frame.address = 0x27 + 0x27;
-	twi_frame.num_bytes = 1;
-	twi_frame.data = tmp;
-	twi_frame.data[0] = 0x97;
-	twi_frame.data[1] = 0x00;
-	twi_frame.data[2] = 0x00;
+	twi_start();
+	twi_send_addr(LCD_ADDRESS);
+	twi_send_nibble(0x00);
+	twi_send_nibble(0x30);
+	twi_send_nibble(0x30);
+	twi_send_nibble(0x30);
+	twi_send_nibble(0x30);
+	twi_send_nibble(0x20);
+	twi_send_byte(0x0C, 0x00);
+	twi_send_byte(0x01, 0x00);
+	twi_stop();
 
-	state = twi_send_data(twi_frame);
+	twi_start();
+	twi_send_addr(LCD_ADDRESS);
+	state = twi_send_byte(0x80, BACKLIGHT);
+	twi_stop();
+	unsigned char* init_str_1 = "LCD INIT";
+	twi_frame twi_init;
+	twi_init.address = LCD_ADDRESS;
+	twi_init.num_bytes = 8;
+	twi_init.lower = (BACKLIGHT | DATA_BYTE);
+	twi_init.data = init_str_1;
+	state = twi_send_data(twi_init);
+
 
 	return state;
 };
 
 unsigned char lcd_position(unsigned char pos){
-	unsigned char state = SUCCESS;
-	unsigned char tmp[1];
-	twi_frame twi_frame;
+	unsigned char state;
 
-	twi_frame.address = 0x27 + WRITE;
-	twi_frame.num_bytes = 3;
-	twi_frame.data = tmp;
-	twi_frame.data[0] = 0x88;
+	twi_start();
+	twi_send_addr(LCD_ADDRESS);
+	state = twi_send_byte(pos | 0x80, BACKLIGHT);
+	twi_stop();
 
-	state = twi_send_data(twi_frame);
 
 	return state;
 };
 
-unsigned char lcd_write_str(){
+unsigned char lcd_write_str(char* str,
+														unsigned char pos,
+														unsigned char size){
 	unsigned char state = SUCCESS;
-	char buffer[5];
 	twi_frame twi_frame;
 
-	twi_frame.address = 0x27 + 0x27;
-	twi_frame.num_bytes = 4;
-	twi_frame.data = buffer;
-	twi_frame.data[0] = 0x00;
-	twi_frame.data[1] = 0x80 + 0x27;
-	twi_frame.data[2] = "E";
-	twi_frame.data[3] = "S";
+	state = lcd_position(pos);
+
+	twi_frame.address = LCD_ADDRESS;
+	twi_frame.lower = (BACKLIGHT | DATA_BYTE);
+	twi_frame.num_bytes = size;
+	twi_frame.data = str;
 
 	state = twi_send_data(twi_frame);
 
