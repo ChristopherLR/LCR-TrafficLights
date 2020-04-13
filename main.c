@@ -37,7 +37,7 @@
  * Ref to Addresses from Microchip AN_1981*/
 #define WRITE         0
 #define READ          1
-#define OWN_ADR       60
+#define OWN_ADR       00
 #define SUCCESS       0xFF
 #define START         0x08
 #define REP_START     0x10
@@ -70,10 +70,13 @@ char spi_read(char, char);
 char twi_init();
 unsigned char twi_start();
 void twi_wait();
+void twi_stop();
 unsigned char twi_send_addr(unsigned char);
-unsigned char twi_send_byte(unsigned char);
+unsigned char twi_send_byte(unsigned char, unsigned char);
+unsigned char twi_send_nibble(unsigned char);
 unsigned char twi_send_data(twi_frame);
 unsigned char lcd_init();
+unsigned char lcd_write_str();
 void ERROR();
 
 
@@ -90,18 +93,64 @@ int main() {
 	configure_int1();
 	configure_spi();
 	configure_port_expander();
-	//twi_init();
+	twi_init();
 
 	unsigned char state = SUCCESS;
 
 	//state = lcd_init();
 
-	if(state == SUCCESS)
-		ERROR();
+	//if(state == SUCCESS)
+	//	ERROR();
+
+	twi_start();
+	twi_send_addr(0x27 + 0x27);
+	twi_send_nibble(0x00);
+	twi_stop();
+	twi_start();
+	twi_send_addr(0x27 + 0x27);
+	twi_send_nibble(0x30);
+	twi_stop();
+	twi_start();
+	twi_send_addr(0x27 + 0x27);
+	twi_send_nibble(0x30);
+	twi_stop();
+	twi_start();
+	twi_send_addr(0x27 + 0x27);
+	twi_send_nibble(0x30);
+	twi_stop();
+	twi_start();
+	twi_send_addr(0x27 + 0x27);
+	twi_send_nibble(0x28);
+	twi_stop();
+
+	unsigned char init_str[2];
+	init_str[0] = 0x0C;
+	init_str[1] = 0x01;
+	twi_start();
+	twi_send_addr(0x27 + 0x27);
+	twi_send_nibble(0x00 | 0x08);
+	twi_send_nibble(0xC0 | 0x08);
+	twi_send_nibble(0x00 | 0x08);
+	twi_send_nibble(0x10 | 0x08);
+	//twi_send_byte(init_str[1], 0x08);
+	twi_stop();
+
+	unsigned char* init_str_1 = "HI";
+	twi_start();
+	twi_send_addr(0x27 + 0x27);
+	twi_send_byte(0x80, 0x08);
+	twi_stop();
+	twi_start();
+	twi_send_addr(0x27 + 0x27);
+	twi_send_byte(init_str_1[0], 0x09);
+	twi_send_byte(init_str_1[1], 0x09);
+	twi_stop();
 
 	spi_send(0x14, 0x00);
 	/* Enable Global interrupts */
 	sei();
+
+	//lcd_write_str();
 
 	while (1) {}
 	return 0;
@@ -231,6 +280,10 @@ char spi_read(char cmd, char data){
 	return retv;
 };
 
+unsigned char swap(unsigned char x){
+	return ((x & 0x0F)<<4 | (x & 0xF0)>>4);
+};
+
 void configure_port_expander(){
 	/* IOCON */
 	spi_send(IOCON, 0b01000000);
@@ -302,6 +355,12 @@ void configure_clock1(const float scaler){
 };
 
 char twi_init(){
+
+	DDRC |= 0b00000001;
+	DDRC &= 0b11001111;
+
+	PORTC |= 0b00110000;
+
 	/* TWAR - TWI Address */
 	TWAR = OWN_ADR;
 
@@ -313,6 +372,7 @@ char twi_init(){
 	TWBR = TWI_BIT_RATE;
 
 	TWCR = (1 << TWEN);
+
 	return 1;
 };
 
@@ -339,6 +399,11 @@ unsigned char twi_start(){
 	return SUCCESS;
 };
 
+void twi_stop(){
+	/* Sending the stop condition */
+	TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);
+};
+
 unsigned char twi_send_data(twi_frame tx_frame){
 	unsigned char state = SUCCESS;
 
@@ -350,25 +415,40 @@ unsigned char twi_send_data(twi_frame tx_frame){
 		if(!(tx_frame.address & READ)){
 			// Checking if the address includes read or write byte
 			for(unsigned char i = 0; ((i<tx_frame.num_bytes)&&(state=SUCCESS)); i++)
-				state = twi_send_byte(tx_frame.data[i]);
+				state = twi_send_byte(tx_frame.data[i],0);
 		}
 	}
 
-	/* Sending the stop condition */
-	TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);
+	twi_stop();
 
 	return state;
 };
 
-unsigned char twi_send_byte(unsigned char data){
+unsigned char twi_send_byte(unsigned char data,
+														unsigned char lower){
 
-	twi_wait();
+	unsigned char first_nib  = (data & 0xF0) | lower;
+	unsigned char second_nib = ((data << 4)&0xF0) | lower;
 
-	TWDR = data; // Send Data across twi
+	twi_send_nibble(first_nib);
+	twi_send_nibble(second_nib);
+
+	return SUCCESS;
+};
+
+unsigned char twi_send_nibble(unsigned char nibble){
+	unsigned char tx = nibble ;
+	TWDR = tx | 0x04;
 	TWCR = (1 << TWINT) | (1 << TWEN); // Start transmission
-
 	twi_wait();
-	if(TWSR != MTX_DATA_ACK) return TWSR; // Checking for ack
+
+	//if((TWSR&0xF8) != 0x28) return TWSR;
+
+	TWDR = tx & 0xFB;
+	TWCR = (1 << TWINT) | (1 << TWEN); // Start transmission
+	twi_wait();
+
+	//if((TWSR&0xF8) != 0x28) return TWSR;
 	return SUCCESS;
 };
 
@@ -391,21 +471,54 @@ void twi_wait(){
 void ERROR(){
 	PORTD |= 0b10000000;
 };
-/*
+
 unsigned char lcd_init(){
+
 	unsigned char state = SUCCESS;
 	unsigned char tmp[3];
 	twi_frame twi_frame;
 
 	twi_frame.address = 0x27 + 0x27;
-	twi_frame.num_bytes = 3;
+	twi_frame.num_bytes = 1;
 	twi_frame.data = tmp;
-	twi_frame.data[0] = 0x30;
-	twi_frame.data[1] = 0x30;
-	twi_frame.data[2] = 0x30;
+	twi_frame.data[0] = 0x97;
+	twi_frame.data[1] = 0x00;
+	twi_frame.data[2] = 0x00;
 
 	state = twi_send_data(twi_frame);
 
 	return state;
 };
-*/
+
+unsigned char lcd_position(unsigned char pos){
+	unsigned char state = SUCCESS;
+	unsigned char tmp[1];
+	twi_frame twi_frame;
+
+	twi_frame.address = 0x27 + WRITE;
+	twi_frame.num_bytes = 3;
+	twi_frame.data = tmp;
+	twi_frame.data[0] = 0x88;
+
+	state = twi_send_data(twi_frame);
+
+	return state;
+};
+
+unsigned char lcd_write_str(){
+	unsigned char state = SUCCESS;
+	char buffer[5];
+	twi_frame twi_frame;
+
+	twi_frame.address = 0x27 + 0x27;
+	twi_frame.num_bytes = 4;
+	twi_frame.data = buffer;
+	twi_frame.data[0] = 0x00;
+	twi_frame.data[1] = 0x80 + 0x27;
+	twi_frame.data[2] = "E";
+	twi_frame.data[3] = "S";
+
+	state = twi_send_data(twi_frame);
+
+	return state;
+};
