@@ -139,6 +139,7 @@ traffic_light tlight_f = {0, 0, 0};
 traffic_light tlight_g = {0, 0, 0};
 traffic_light tlight_non = {0, 0, 0};
 mcu_state state = {&tlight_a, &tlight_b};
+mcu_state next_state = {&tlight_a, &tlight_b};
 unsigned char state_counter_1 = 0;
 unsigned char state_counter_2 = 0;
 
@@ -305,6 +306,11 @@ void increment_state(){
     tlight_1->orange_counter = 0;
     tlight_1->red_counter = 3;
     state_counter_1 = tlight_1 -> red_counter;
+  } else if ( tlight_1->red_counter > 1){
+    tlight_1->red_counter --;
+    state_counter_1 = tlight_1 -> red_counter;
+  } else if ( tlight_1->red_counter <= 0){
+    state.tlight_1 = next_state.tlight_1;
   } else {
     ERROR();
   }
@@ -328,6 +334,11 @@ void increment_state(){
     tlight_2->orange_counter = 0;
     tlight_2->red_counter = 3;
     state_counter_2 = tlight_2 -> red_counter;
+  } else if ( tlight_2->red_counter > 1){
+    tlight_2->red_counter --;
+    state_counter_2 = tlight_1 -> red_counter;
+  } else if ( tlight_2->red_counter <= 0){
+    state.tlight_2 = next_state.tlight_2;
   } else {
     ERROR();
   }
@@ -335,11 +346,25 @@ void increment_state(){
 
 /* Returns true if next state stays green */
 char check_next_state_1(){
-  return 1;
+  if(state.tlight_1 == next_state.tlight_1) return 1;
+  if(state.tlight_1 == next_state.tlight_2){
+    traffic_light *tmp = next_state.tlight_1;
+    next_state.tlight_1 = next_state.tlight_2;
+    next_state.tlight_2 = tmp;
+    return 1;
+  }
+  return 0;
 }
 
 char check_next_state_2(){
-  return 1;
+  if(state.tlight_2 == next_state.tlight_2) return 1;
+  if(state.tlight_2 == next_state.tlight_1){
+    traffic_light *tmp = next_state.tlight_1;
+    next_state.tlight_1 = next_state.tlight_2;
+    next_state.tlight_2 = tmp;
+    return 1;
+  }
+  return 0;
 }
 
 void transfer_state(){
