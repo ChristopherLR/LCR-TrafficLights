@@ -47,6 +47,14 @@
 #define LCD_POS       0x80
 #define FOUR_BIT_MODE 0x28
 
+/* LCD POSITIONS */
+#define A 0
+#define B 1
+#define C 2
+#define D 3
+#define E 4
+#define F 5
+#define G 6
 
 /* Encapsulating the twi transmission into a struct */
 typedef struct {
@@ -55,6 +63,25 @@ typedef struct {
 	unsigned char lower;      // Setting the Backlight/Data
 	unsigned char *data;      // Pointer to the data for transmission
 } twi_frame;
+
+typedef struct {
+  char green_counter;
+  char orange_counter;
+  char red_counter;
+} traffic_light;
+
+char get_current_light(traffic_light);
+
+typedef struct {
+  char out_a;
+  char out_b;
+  char in;
+} port_expander;
+
+typedef struct {
+  traffic_light * tlight_1;
+  traffic_light * tlight_2;
+} mcu_state;
 
 /* Scales to a standard of 1 sec, so scaler 0.5 would be half second
  * Be careful because the underlying value is 16 bits */
@@ -66,10 +93,16 @@ char analog_init();
 unsigned char analog_read();
 void check_analog();
 char check_hazard();
+void increment_state();
+char check_next_state_1();
+char check_next_state_2();
 void hazard();
 void configure_spi();
 void configure_port_expander_a();
+void read_port_expander_a();
 void configure_port_expander_b();
+void read_port_expander_b();
+void transfer_state();
 char spi_master_transmit(char);
 char spi_send(char, char, char);
 char spi_read(char, char, char);
@@ -85,13 +118,34 @@ unsigned char twi_send_data(twi_frame);
 unsigned char lcd_position(unsigned char);
 unsigned char lcd_init();
 unsigned char lcd_write_str(char*, unsigned char, unsigned char);
+void display_counter();
 void ERROR();
 
 /* Global variables */
 float timer_scaler = 0.1;
 unsigned char LED_VAL= 0xFF;
-unsigned char HAZARD_COUNTER = 0;
+char HAZARD_COUNTER = 0;
+unsigned char HAZARD_LED = 0b00100010;
 unsigned char TICK = 1;
+char CHECK_PE = 0;
+unsigned char LED_DISP1[] = "                ";
+unsigned char LED_DISP2[] = "                ";
+traffic_light tlight_a = {20, 0, 0};
+traffic_light tlight_b = {20, 0, 0};
+traffic_light tlight_c = {0, 0, 0};
+traffic_light tlight_d = {0, 0, 0};
+traffic_light tlight_e = {0, 0, 0};
+traffic_light tlight_f = {0, 0, 0};
+traffic_light tlight_g = {0, 0, 0};
+traffic_light tlight_non = {0, 0, 0};
+mcu_state state = {&tlight_a, &tlight_b};
+unsigned char state_counter_1 = 0;
+unsigned char state_counter_2 = 0;
+
+/* [][][][][G][B][D][F] */
+port_expander PE_A = {0b00010001, 0b00010100, 0};
+/* [][][][][][E][A][C] */
+port_expander PE_B = {0b00010100, 0b00000001, 0};
 
 int main() {
 
@@ -130,24 +184,41 @@ int main() {
 
 	if(state != SUCCESS) ERROR();
 
+
 	while (1) {
     check_hazard();
     if(TICK){
       check_analog();
-      if(HAZARD_COUNTER) hazard();
+      if(HAZARD_COUNTER) {
+        hazard();
+      }
       TICK = 0;
       display_state();
     }
-
-
+    if(CHECK_PE > 0){
+        read_port_expander_a();
+        read_port_expander_b();
+        CHECK_PE --;
+    }
   }
 	return 0;
 };
 
+/* PE_A */
 ISR(INT0_vect){
+  CHECK_PE++;
+  //read_port_expander_a();
+  LED_DISP2[14] = 'A';
+  return;
 };
 
+/* PE_B */
 ISR(INT1_vect){
+  CHECK_PE++;
+  //read_port_expander_b();
+  LED_DISP2[15] = 'B';
+  return;
+
 };
 
 ISR(TIMER1_COMPB_vect){
@@ -161,11 +232,206 @@ ISR(TIMER1_COMPB_vect){
 };
 
 void display_state(){
-  spi_send(OLATA, LED_VAL, 'A');
-  spi_send(OLATB, LED_VAL, 'A');
-  spi_send(OLATA, LED_VAL, 'B');
-  spi_send(OLATB, LED_VAL, 'B');
+  LED_DISP1[F] = (PE_A.in & 0b0001) ? 'X' : ' ';
+  LED_DISP1[D] = (PE_A.in & 0b0010) ? 'X' : ' ';
+  LED_DISP1[B] = (PE_A.in & 0b0100) ? 'X' : ' ';
+  LED_DISP1[G] = (PE_A.in & 0b1000) ? 'X' : ' ';
+  LED_DISP1[C] = (PE_B.in & 0b0001) ? 'X' : ' ';
+  LED_DISP1[A] = (PE_B.in & 0b0010) ? 'X' : ' ';
+  LED_DISP1[E] = (PE_B.in & 0b0100) ? 'X' : ' ';
+  LED_DISP2[A] = get_current_light(tlight_a);
+  LED_DISP2[B] = get_current_light(tlight_b);
+  LED_DISP2[C] = get_current_light(tlight_c);
+  LED_DISP2[D] = get_current_light(tlight_d);
+  LED_DISP2[E] = get_current_light(tlight_e);
+  LED_DISP2[F] = get_current_light(tlight_f);
+  LED_DISP2[G] = get_current_light(tlight_g);
+
+  if(HAZARD_COUNTER > 0){
+    spi_send(OLATA, HAZARD_LED, 'A');
+    spi_send(OLATB, HAZARD_LED, 'A');
+    spi_send(OLATA, HAZARD_LED, 'B');
+    spi_send(OLATB, HAZARD_LED, 'B');
+  } else {
+    increment_state();
+    transfer_state();
+    spi_send(OLATA, PE_A.out_a, 'A');
+    spi_send(OLATB, PE_A.out_b, 'A');
+    spi_send(OLATA, PE_B.out_a, 'B');
+    spi_send(OLATB, PE_B.out_b, 'B');
+  }
+  display_counter();
+  lcd_write_str(LED_DISP1, 0x00, 16);
+  lcd_write_str(LED_DISP2, 0x40, 16);
+
 };
+
+void display_counter(){
+  unsigned char tens = 0;
+  unsigned char units = 0;
+
+  tens = (state_counter_1/10)%10;
+  units = state_counter_1%10;
+  LED_DISP1[12] = '0' + tens;
+  LED_DISP1[13] = '0' + units;
+
+  tens = (state_counter_2/10)%10;
+  units = state_counter_2%10;
+  LED_DISP1[14] = '0' + tens;
+  LED_DISP1[15] = '0' + units;
+
+}
+
+void increment_state(){
+  traffic_light * tlight_1 = state.tlight_1;
+  traffic_light * tlight_2 = state.tlight_2;
+
+  if(tlight_1->green_counter > 1){
+    tlight_1->green_counter --;
+    state_counter_1 = tlight_1 -> green_counter;
+  } else if( tlight_1->green_counter > 0){
+    if(((tlight_1 == &tlight_a) || (tlight_1 == &tlight_b)) && check_next_state_1()){
+      tlight_1->green_counter = 6;
+      state_counter_1 = tlight_1 -> green_counter;
+    } else {
+      tlight_1->green_counter = 0;
+      tlight_1->orange_counter = 4;
+      state_counter_1 = tlight_1 -> orange_counter;
+    }
+  } else if ( tlight_1->orange_counter > 1){
+    tlight_1->orange_counter --;
+    state_counter_1 = tlight_1 -> orange_counter;
+  } else if ( tlight_1->orange_counter > 0){
+    tlight_1->orange_counter = 0;
+    tlight_1->red_counter = 3;
+    state_counter_1 = tlight_1 -> red_counter;
+  } else {
+    ERROR();
+  }
+
+  if(tlight_2->green_counter > 1){
+    tlight_2->green_counter --;
+    state_counter_2 = tlight_2 -> green_counter;
+  } else if( tlight_2->green_counter > 0){
+    if(((tlight_2 == &tlight_a) || (tlight_2 == &tlight_b)) && check_next_state_2()){
+      tlight_2->green_counter = 6;
+      state_counter_2 = tlight_2 -> green_counter;
+    } else {
+      tlight_2->green_counter = 0;
+      tlight_2->orange_counter = 4;
+      state_counter_2 = tlight_2 -> orange_counter;
+    }
+  } else if ( tlight_2->orange_counter > 1){
+    tlight_2->orange_counter --;
+    state_counter_2 = tlight_2 -> orange_counter;
+  } else if ( tlight_2->orange_counter > 0){
+    tlight_2->orange_counter = 0;
+    tlight_2->red_counter = 3;
+    state_counter_2 = tlight_2 -> red_counter;
+  } else {
+    ERROR();
+  }
+}
+
+/* Returns true if next state stays green */
+char check_next_state_1(){
+  return 1;
+}
+
+char check_next_state_2(){
+  return 1;
+}
+
+void transfer_state(){
+  PE_B.out_a = 0;
+  PE_B.out_b = 0;
+  switch(get_current_light(tlight_a)){
+  case 'G':
+    PE_B.out_a |= 0b00000100;
+    break;
+  case 'Y':
+    PE_B.out_a |= 0b00000010;
+    break;
+  case 'R':
+    PE_B.out_a |= 0b00000001;
+    break;
+  }
+  switch(get_current_light(tlight_c)){
+  case 'G':
+    PE_B.out_a |= 0b01000000;
+    break;
+  case 'Y':
+    PE_B.out_a |= 0b00100000;
+    break;
+  case 'R':
+    PE_B.out_a |= 0b00010000;
+    break;
+  }
+  switch(get_current_light(tlight_e)){
+  case 'G':
+    PE_B.out_b |= 0b00000100;
+    break;
+  case 'Y':
+    PE_B.out_b |= 0b00000010;
+    break;
+  case 'R':
+    PE_B.out_b |= 0b00000001;
+    break;
+  }
+  PE_A.out_a = 0;
+  PE_A.out_b = 0;
+  switch(get_current_light(tlight_g)){
+  case 'G':
+    PE_A.out_b |= 0b00000100;
+    break;
+  case 'Y':
+    PE_A.out_b |= 0b00000010;
+    break;
+  case 'R':
+    PE_A.out_b |= 0b00000001;
+    break;
+  }
+  switch(get_current_light(tlight_b)){
+  case 'G':
+    PE_A.out_b |= 0b01000000;
+    break;
+  case 'Y':
+    PE_A.out_b |= 0b00100000;
+    break;
+  case 'R':
+    PE_A.out_b |= 0b00010000;
+    break;
+  }
+  switch(get_current_light(tlight_f)){
+  case 'G':
+    PE_A.out_a |= 0b01000000;
+    break;
+  case 'Y':
+    PE_A.out_a |= 0b00100000;
+    break;
+  case 'R':
+    PE_A.out_a |= 0b00010000;
+    break;
+  }
+  switch(get_current_light(tlight_d)){
+  case 'G':
+    PE_A.out_a |= 0b00000100;
+    break;
+  case 'Y':
+    PE_A.out_a |= 0b00000010;
+    break;
+  case 'R':
+    PE_A.out_a |= 0b00000001;
+    break;
+  }
+}
+
+char get_current_light(traffic_light tlight){
+  char retv = '?';
+  retv = (tlight.green_counter) ? 'G' :
+    (tlight.orange_counter) ? 'Y' : 'R';
+  return retv;
+}
 
 void check_analog(){
   unsigned char an = analog_read();
@@ -228,6 +494,8 @@ char check_hazard(){
   if(!(PIND & 0b10000000)){
     if(!HAZARD_COUNTER) {
       HAZARD_COUNTER = 60;
+      PE_A.in = 0;
+      PE_B.in = 0;
       LED_VAL = 0b00100010;
     }
   }
@@ -235,8 +503,9 @@ char check_hazard(){
 };
 
 void hazard(){
-  LED_VAL ^= 0b00100010;
+  HAZARD_LED ^= 0b00100010;
   HAZARD_COUNTER--;
+  if(HAZARD_COUNTER > 60) HAZARD_COUNTER = 0;
 };
 
 void configure_spi(){
@@ -349,6 +618,19 @@ void configure_port_expander_a(){
 
 };
 
+void read_port_expander_a(){
+  char tmp = 0;
+  tmp = spi_read(GPIOA, 0x00, 'A');
+  /* Checking F & D */
+  if(!(tmp & 0b10000000)) PE_A.in |= 0b000000001;
+  if(!(tmp & 0b00001000)) PE_A.in |= 0b000000010;
+
+  tmp = spi_read(GPIOB, 0x00, 'A');
+  /* Checking G & B */
+  if(!(tmp & 0b10000000)) PE_A.in |= 0b000000100;
+  if(!(tmp & 0b00001000)) PE_A.in |= 0b000001000;
+}
+
 void configure_port_expander_b(){
 	/* IOCON */
 	spi_send(IOCON, 0b01000000, 'B');
@@ -367,6 +649,19 @@ void configure_port_expander_b(){
 	/* DEFVAL - sets the default val */
 	spi_send(DEFVALB, 0b00001000, 'B');
 	spi_send(DEFVALA, 0b10001000, 'B');
+};
+
+void read_port_expander_b(){
+  char tmp = 0;
+
+  tmp = spi_read(GPIOA, 0x00, 'B');
+  /* Checking C & A */
+  if(!(tmp & 0b10000000)) PE_B.in |= 0b000000001;
+  if(!(tmp & 0b00001000)) PE_B.in |= 0b000000010;
+
+  tmp = spi_read(GPIOB, 0x00, 'B');
+  /* Checking E */
+  if(!(tmp & 0b00001000)) PE_B.in |= 0b000000100;
 };
 
 void configure_clock1(const float scaler){
@@ -567,7 +862,6 @@ void twi_wait(){
 };
 
 void ERROR(){
-	PORTD |= 0b10000000;
 };
 
 unsigned char lcd_init(){
