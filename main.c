@@ -111,6 +111,8 @@ unsigned char twi_start();
 void twi_wait();
 void twi_stop();
 void display_state();
+void refresh_state();
+void clear_repeat(traffic_light *);
 unsigned char twi_send_addr(unsigned char);
 unsigned char twi_send_byte(unsigned char, unsigned char);
 unsigned char twi_send_nibble(unsigned char);
@@ -119,7 +121,25 @@ unsigned char lcd_position(unsigned char);
 unsigned char lcd_init();
 unsigned char lcd_write_str(char*, unsigned char, unsigned char);
 void display_counter();
+void render_tlight(traffic_light*, char);
+void set_next_state();
 void ERROR();
+char check_a();
+char check_b();
+char check_c();
+char check_d();
+char check_e();
+char check_f();
+char check_g();
+void clear_a();
+void clear_b();
+void clear_c();
+void clear_d();
+void clear_e();
+void clear_f();
+void clear_g();
+char min(char, char);
+
 
 /* Global variables */
 float timer_scaler = 0.1;
@@ -233,13 +253,13 @@ ISR(TIMER1_COMPB_vect){
 };
 
 void display_state(){
-  LED_DISP1[F] = (PE_A.in & 0b0001) ? 'X' : ' ';
-  LED_DISP1[D] = (PE_A.in & 0b0010) ? 'X' : ' ';
-  LED_DISP1[B] = (PE_A.in & 0b0100) ? 'X' : ' ';
-  LED_DISP1[G] = (PE_A.in & 0b1000) ? 'X' : ' ';
-  LED_DISP1[C] = (PE_B.in & 0b0001) ? 'X' : ' ';
-  LED_DISP1[A] = (PE_B.in & 0b0010) ? 'X' : ' ';
-  LED_DISP1[E] = (PE_B.in & 0b0100) ? 'X' : ' ';
+  LED_DISP1[A] = (check_a()) ? 'X' : ' ';
+  LED_DISP1[B] = (check_b()) ? 'X' : ' ';
+  LED_DISP1[C] = (check_c()) ? 'X' : ' ';
+  LED_DISP1[D] = (check_d()) ? 'X' : ' ';
+  LED_DISP1[E] = (check_e()) ? 'X' : ' ';
+  LED_DISP1[F] = (check_f()) ? 'X' : ' ';
+  LED_DISP1[G] = (check_g()) ? 'X' : ' ';
   LED_DISP2[A] = get_current_light(tlight_a);
   LED_DISP2[B] = get_current_light(tlight_b);
   LED_DISP2[C] = get_current_light(tlight_c);
@@ -261,11 +281,230 @@ void display_state(){
     spi_send(OLATA, PE_B.out_a, 'B');
     spi_send(OLATB, PE_B.out_b, 'B');
   }
+  render_tlight(state.tlight_1, 10);
+  render_tlight(state.tlight_2, 11);
+  render_tlight(next_state.tlight_1, 12);
+  render_tlight(next_state.tlight_2, 13);
+  set_next_state();
   display_counter();
   lcd_write_str(LED_DISP1, 0x00, 16);
   lcd_write_str(LED_DISP2, 0x40, 16);
 
 };
+
+char check_a(){return PE_B.in & 0b0010;}
+char check_b(){return PE_A.in & 0b0100;}
+char check_c(){return PE_B.in & 0b0001;}
+char check_d(){return PE_A.in & 0b0010;}
+char check_e(){return PE_B.in & 0b0100;}
+char check_f(){return PE_A.in & 0b0001;}
+char check_g(){return PE_A.in & 0b1000;}
+
+void clear_a(){PE_B.in &= 0b1101;}
+void clear_b(){PE_A.in &= 0b1011;}
+void clear_c(){PE_B.in &= 0b1110;}
+void clear_d(){PE_A.in &= 0b1101;}
+void clear_e(){PE_B.in &= 0b1011;}
+void clear_f(){PE_A.in &= 0b1110;}
+void clear_g(){PE_A.in &= 0b0111;}
+
+void refresh_state(){
+  traffic_light * next_1 = next_state.tlight_1;
+  traffic_light * next_2 = next_state.tlight_2;
+
+  state.tlight_1->green_counter = 0;
+  state.tlight_2->green_counter = 0;
+  state.tlight_1->orange_counter = 0;
+  state.tlight_2->orange_counter = 0;
+  state.tlight_1->red_counter = 0;
+  state.tlight_2->red_counter = 0;
+
+  if((next_1 == &tlight_a) || (next_1 == &tlight_b)){
+    next_1->green_counter = 20;
+    next_1->orange_counter = 0;
+    next_1->red_counter = 0;
+  } else {
+    next_1->green_counter = 6;
+    next_1->orange_counter = 0;
+    next_1->red_counter = 0;
+  }
+
+  if((next_2 == &tlight_a) || (next_2 == &tlight_b)){
+    next_2->green_counter = 20;
+    next_2->orange_counter = 0;
+    next_2->red_counter = 0;
+  } else {
+    next_2->green_counter = 6;
+    next_2->orange_counter = 0;
+    next_2->red_counter = 0;
+  }
+
+}
+
+void clear_repeat(traffic_light * prev){
+  if (prev == &tlight_a) clear_a();
+  if (prev == &tlight_b) clear_b();
+  if (prev == &tlight_c) clear_c();
+  if (prev == &tlight_d) clear_d();
+  if (prev == &tlight_e) clear_e();
+  if (prev == &tlight_f) clear_f();
+  if (prev == &tlight_g) clear_g();
+}
+
+char min(char a, char b){
+  if( a < b ) return a;
+  return b;
+}
+
+void set_next_state(){
+  traffic_light * tlight_1 = state.tlight_1;
+  traffic_light * tlight_2 = state.tlight_2;
+
+  if(tlight_1 == tlight_2){
+    next_state.tlight_1 = &tlight_a;
+    next_state.tlight_2 = &tlight_b;
+    refresh_state();
+    return;
+  }
+
+  /* State AB */
+  if(((tlight_1 == &tlight_a) && (tlight_2 == &tlight_b)) ||
+     ((tlight_2 == &tlight_a) && (tlight_1 == &tlight_b))){
+    if( check_c()){
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_c;
+    } else if( check_d()){
+      next_state.tlight_1 = &tlight_b;
+      next_state.tlight_2 = &tlight_d;
+    } else if( check_c() && check_d()){
+      next_state.tlight_1 = &tlight_c;
+      next_state.tlight_2 = &tlight_d;
+    } else if( check_e() || check_f()){
+      next_state.tlight_1 = &tlight_e;
+      next_state.tlight_2 = &tlight_f;
+    } else if( check_g()){
+      next_state.tlight_1 = &tlight_g;
+      next_state.tlight_2 = &tlight_non;
+    } else {
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_b;
+    }
+  }
+  /* State AC */
+  if(((tlight_1 == &tlight_a) && (tlight_2 == &tlight_c)) ||
+     ((tlight_2 == &tlight_a) && (tlight_1 == &tlight_c))){
+    if( check_b() || check_d()){
+      next_state.tlight_1 = &tlight_b;
+      next_state.tlight_2 = &tlight_d;
+    } else if( check_e() || check_f()){
+      next_state.tlight_1 = &tlight_e;
+      next_state.tlight_2 = &tlight_f;
+    } else if( check_g()){
+      next_state.tlight_1 = &tlight_g;
+      next_state.tlight_2 = &tlight_non;
+    } else {
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_b;
+    }
+  }
+  /* State BD */
+  if(((tlight_1 == &tlight_b) && (tlight_2 == &tlight_d)) ||
+     ((tlight_2 == &tlight_b) && (tlight_1 == &tlight_d))){
+    if( check_a() || check_c()){
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_c;
+    } else if( check_e() || check_f()){
+      next_state.tlight_1 = &tlight_e;
+      next_state.tlight_2 = &tlight_f;
+    } else if( check_g()){
+      next_state.tlight_1 = &tlight_g;
+      next_state.tlight_2 = &tlight_non;
+    } else {
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_c;
+    }
+
+  }
+  /* State CD */
+  if(((tlight_1 == &tlight_c) && (tlight_2 == &tlight_d)) ||
+     ((tlight_2 == &tlight_c) && (tlight_1 == &tlight_d))){
+    if( check_a() && check_b()){
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_b;
+    } else if( check_a() && check_c()){
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_c;
+    } else if( check_b() || check_d()){
+      next_state.tlight_1 = &tlight_b;
+      next_state.tlight_2 = &tlight_d;
+    } else if( check_e() || check_f()){
+      next_state.tlight_1 = &tlight_e;
+      next_state.tlight_2 = &tlight_f;
+    } else if( check_g()){
+      next_state.tlight_1 = &tlight_g;
+      next_state.tlight_2 = &tlight_non;
+    } else {
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_b;
+    }
+  }
+  /* State EF */
+  if(((tlight_1 == &tlight_e) && (tlight_2 == &tlight_f)) ||
+     ((tlight_2 == &tlight_e) && (tlight_1 == &tlight_f))){
+    if( check_c() && check_d()){
+      next_state.tlight_1 = &tlight_c;
+      next_state.tlight_2 = &tlight_d;
+    } else if( check_d() && check_b()){
+      next_state.tlight_1 = &tlight_b;
+      next_state.tlight_2 = &tlight_d;
+    } else if( check_a() || check_c()){
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_c;
+    } else if( check_e() || check_f()){
+      next_state.tlight_1 = &tlight_e;
+      next_state.tlight_2 = &tlight_f;
+    } else if( check_g()){
+      next_state.tlight_1 = &tlight_g;
+      next_state.tlight_2 = &tlight_non;
+    } else {
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_b;
+    }
+  }
+  /* State G */
+  if((tlight_1 == &tlight_g) || (tlight_2 == &tlight_g)){
+    if( check_a() && check_b()){
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_b;
+    } else if( check_a() && check_c()){
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_c;
+    } else if( check_b() || check_d()){
+      next_state.tlight_1 = &tlight_b;
+      next_state.tlight_2 = &tlight_d;
+    } else if( check_e() || check_f()){
+      next_state.tlight_1 = &tlight_e;
+      next_state.tlight_2 = &tlight_f;
+    } else if( check_g()){
+      next_state.tlight_1 = &tlight_g;
+      next_state.tlight_2 = &tlight_non;
+    } else {
+      next_state.tlight_1 = &tlight_a;
+      next_state.tlight_2 = &tlight_b;
+    }
+  }
+}
+
+void render_tlight(traffic_light * curr, char idx){
+  LED_DISP2[idx] = '?';
+  if(curr == &tlight_a) LED_DISP2[idx] = 'A';
+  if(curr == &tlight_b) LED_DISP2[idx] = 'B';
+  if(curr == &tlight_c) LED_DISP2[idx] = 'C';
+  if(curr == &tlight_d) LED_DISP2[idx] = 'D';
+  if(curr == &tlight_e) LED_DISP2[idx] = 'E';
+  if(curr == &tlight_f) LED_DISP2[idx] = 'F';
+  if(curr == &tlight_g) LED_DISP2[idx] = 'G';
+}
 
 void display_counter(){
   unsigned char tens = 0;
@@ -286,84 +525,73 @@ void display_counter(){
 void increment_state(){
   traffic_light * tlight_1 = state.tlight_1;
   traffic_light * tlight_2 = state.tlight_2;
+  char g_count, o_count, r_count;
 
-  if(tlight_1->green_counter > 1){
-    tlight_1->green_counter --;
-    state_counter_1 = tlight_1 -> green_counter;
-  } else if( tlight_1->green_counter > 0){
-    if(((tlight_1 == &tlight_a) || (tlight_1 == &tlight_b)) && check_next_state_1()){
-      tlight_1->green_counter = 6;
-      state_counter_1 = tlight_1 -> green_counter;
+  g_count = min(tlight_1->green_counter, tlight_2->green_counter);
+  o_count = min(tlight_1->orange_counter, tlight_2->orange_counter);
+  r_count = min(tlight_1->red_counter, tlight_2->red_counter);
+
+  clear_repeat(tlight_1);
+  clear_repeat(tlight_2);
+
+  if(g_count > 1){
+    g_count --;
+    state_counter_1 = g_count;
+  } else if( g_count >  0){
+    if(((tlight_1 == &tlight_a) ||
+        (tlight_1 == &tlight_b) ||
+        (tlight_2 == &tlight_a) ||
+        (tlight_2 == &tlight_b)) && check_next_state_1()){
+      g_count = 6;
+      state_counter_1 = g_count;
     } else {
-      tlight_1->green_counter = 0;
-      tlight_1->orange_counter = 4;
-      state_counter_1 = tlight_1 -> orange_counter;
+      g_count = 0;
+      o_count = 4;
+      state_counter_1 = o_count;
     }
-  } else if ( tlight_1->orange_counter > 1){
-    tlight_1->orange_counter --;
-    state_counter_1 = tlight_1 -> orange_counter;
-  } else if ( tlight_1->orange_counter > 0){
-    tlight_1->orange_counter = 0;
-    tlight_1->red_counter = 3;
-    state_counter_1 = tlight_1 -> red_counter;
-  } else if ( tlight_1->red_counter > 1){
-    tlight_1->red_counter --;
-    state_counter_1 = tlight_1 -> red_counter;
-  } else if ( tlight_1->red_counter <= 0){
+  } else if ( o_count > 1){
+    o_count --;
+    state_counter_1 = o_count;
+  } else if ( o_count > 0){
+    o_count = 0;
+    r_count = 3;
+    state_counter_1 = r_count;
+  } else if ( r_count > 0){
+    r_count --;
+    state_counter_1 = r_count;
+  } else if ( r_count <= 0){
+    refresh_state();
+    LED_DISP2[8] = 'R';
     state.tlight_1 = next_state.tlight_1;
+    state.tlight_2 = next_state.tlight_2;
+    return;
   } else {
+    LED_DISP2[9] = 'E';
     ERROR();
   }
 
-  if(tlight_2->green_counter > 1){
-    tlight_2->green_counter --;
-    state_counter_2 = tlight_2 -> green_counter;
-  } else if( tlight_2->green_counter > 0){
-    if(((tlight_2 == &tlight_a) || (tlight_2 == &tlight_b)) && check_next_state_2()){
-      tlight_2->green_counter = 6;
-      state_counter_2 = tlight_2 -> green_counter;
-    } else {
-      tlight_2->green_counter = 0;
-      tlight_2->orange_counter = 4;
-      state_counter_2 = tlight_2 -> orange_counter;
-    }
-  } else if ( tlight_2->orange_counter > 1){
-    tlight_2->orange_counter --;
-    state_counter_2 = tlight_2 -> orange_counter;
-  } else if ( tlight_2->orange_counter > 0){
-    tlight_2->orange_counter = 0;
-    tlight_2->red_counter = 3;
-    state_counter_2 = tlight_2 -> red_counter;
-  } else if ( tlight_2->red_counter > 1){
-    tlight_2->red_counter --;
-    state_counter_2 = tlight_1 -> red_counter;
-  } else if ( tlight_2->red_counter <= 0){
-    state.tlight_2 = next_state.tlight_2;
-  } else {
-    ERROR();
-  }
+  tlight_1->green_counter = g_count;
+  tlight_2->green_counter = g_count;
+  tlight_1->orange_counter = o_count;
+  tlight_2->orange_counter = o_count;
+  tlight_1->red_counter = r_count;
+  tlight_2->red_counter = r_count;
+
+
 }
 
 /* Returns true if next state stays green */
 char check_next_state_1(){
-  if(state.tlight_1 == next_state.tlight_1) return 1;
-  if(state.tlight_1 == next_state.tlight_2){
-    traffic_light *tmp = next_state.tlight_1;
-    next_state.tlight_1 = next_state.tlight_2;
-    next_state.tlight_2 = tmp;
-    return 1;
-  }
+  if((state.tlight_1 == next_state.tlight_1) &&
+     (state.tlight_2 == next_state.tlight_2)) return 1;
+
+  if((state.tlight_1 == next_state.tlight_2) &&
+     (state.tlight_2 == next_state.tlight_1)) return 1;
   return 0;
 }
 
 char check_next_state_2(){
   if(state.tlight_2 == next_state.tlight_2) return 1;
-  if(state.tlight_2 == next_state.tlight_1){
-    traffic_light *tmp = next_state.tlight_1;
-    next_state.tlight_1 = next_state.tlight_2;
-    next_state.tlight_2 = tmp;
-    return 1;
-  }
   return 0;
 }
 
