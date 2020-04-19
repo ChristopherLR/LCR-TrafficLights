@@ -58,18 +58,26 @@ typedef struct {
 
 /* Scales to a standard of 1 sec, so scaler 0.5 would be half second
  * Be careful because the underlying value is 16 bits */
-void configure_clock1(const float scaler);
+void configure_clock1(float scaler);
+
 void configure_int0();
 void configure_int1();
+char analog_init();
+unsigned char analog_read();
+void check_analog();
+char check_hazard();
+void hazard();
 void configure_spi();
-void configure_port_expander();
+void configure_port_expander_a();
+void configure_port_expander_b();
 char spi_master_transmit(char);
-char spi_send(char, char);
-char spi_read(char, char);
+char spi_send(char, char, char);
+char spi_read(char, char, char);
 char twi_init();
 unsigned char twi_start();
 void twi_wait();
 void twi_stop();
+void display_state();
 unsigned char twi_send_addr(unsigned char);
 unsigned char twi_send_byte(unsigned char, unsigned char);
 unsigned char twi_send_nibble(unsigned char);
@@ -79,26 +87,40 @@ unsigned char lcd_init();
 unsigned char lcd_write_str(char*, unsigned char, unsigned char);
 void ERROR();
 
-
+/* Global variables */
+float timer_scaler = 0.1;
+unsigned char LED_VAL= 0xFF;
+unsigned char HAZARD_COUNTER = 0;
+unsigned char TICK = 1;
 
 int main() {
 
-	DDRD  |= (1 << PD5) | (1 << PD6) | (1 << PD7);
-	PORTD |= (1 << PD2) | (1 << PD3);
-
-	PORTD = 0;
+  /* Set hazard input */
+  DDRD  &= 0b01111111;
+  PORTD |= 0b10000000;
 
 	configure_clock1(1);
 	configure_int0();
 	configure_int1();
 	configure_spi();
-	configure_port_expander();
+  analog_init();
+	configure_port_expander_a();
+	configure_port_expander_b();
 	twi_init();
 
-	spi_send(0x14, 0x00);
+  /* Clear any interrupts that may have occurred */
+	spi_read(GPIOA, 0x00, 'A');
+	spi_read(GPIOB, 0x00, 'A');
+	spi_read(GPIOA, 0x00, 'B');
+	spi_read(GPIOB, 0x00, 'B');
 	unsigned char state = SUCCESS;
 
 	state = lcd_init();
+
+  spi_send(OLATA, 0xFF, 'A');
+  spi_send(OLATB, 0xFF, 'A');
+  spi_send(OLATA, 0xFF, 'B');
+  spi_send(OLATB, 0xFF, 'B');
 
 	/* Enable Global interrupts */
 	sei();
@@ -108,28 +130,59 @@ int main() {
 
 	if(state != SUCCESS) ERROR();
 
-	while (1) {}
+	while (1) {
+    check_hazard();
+    if(TICK){
+      check_analog();
+      if(HAZARD_COUNTER) hazard();
+      TICK = 0;
+      display_state();
+    }
+
+
+  }
 	return 0;
 };
 
 ISR(INT0_vect){
-	PORTD ^= (1 << PD5);
 };
 
 ISR(INT1_vect){
-	char PE_B = spi_read(0x13,0);
-	PORTD ^= (1 << PD6);
 };
 
 ISR(TIMER1_COMPB_vect){
-	//PORTD ^= (1 << PC5);
 	/* TCNT1 - (TCNT1H & TCNT1L) - 16 Bit
 	 * Timer/Counter 1
 	 * Bit 15-0: The value of the timer
 	 */
 	TCNT1 = 0;
-	spi_send(0x14, 0x00);
+  TICK = 1;
+  configure_clock1(timer_scaler);
 };
+
+void display_state(){
+  spi_send(OLATA, LED_VAL, 'A');
+  spi_send(OLATB, LED_VAL, 'A');
+  spi_send(OLATA, LED_VAL, 'B');
+  spi_send(OLATB, LED_VAL, 'B');
+};
+
+void check_analog(){
+  unsigned char an = analog_read();
+  float scaled = 0;
+  if(an < 20 ){
+    scaled = 0;
+  } else if(an < 50){
+    scaled = 0.2;
+  } else if(an < 120){
+    scaled = 0.4;
+  } else if( an < 170){
+    scaled = 0.6;
+  } else if( an < 220){
+    scaled = 0.8;
+  } else scaled = 0.9;
+  timer_scaler = 1.0 - scaled;
+}
 
 void configure_int0(){
 	/* EIMSK - External Interrupt Mask
@@ -171,13 +224,27 @@ void configure_int1(){
 	EICRA |= 0b00001000;
 };
 
+char check_hazard(){
+  if(!(PIND & 0b10000000)){
+    if(!HAZARD_COUNTER) {
+      HAZARD_COUNTER = 60;
+      LED_VAL = 0b00100010;
+    }
+  }
+  return 1;
+};
+
+void hazard(){
+  LED_VAL ^= 0b00100010;
+  HAZARD_COUNTER--;
+};
 
 void configure_spi(){
 	/* DDRB - Data Direction B
 	 * [XTAL][XTAL][SCK][MISO0][MOSI0][!SS][-][-]
 	 */
 	DDRB = 0b00101111;
-	PORTB |= 0b00000100; /* Setting Slave back high */
+	PORTB |= 0b00000101; /* Setting Slaves back high */
 
 	/* SPCR - SPI Control Register
 	 * [SPIE][SPE][DORD][MSTR][CPOL][CPHA][SPR1][SPR0]
@@ -204,35 +271,56 @@ char spi_master_transmit(char data){
 	return SPDR;
 };
 
-char spi_send(char cmd, char data){
+char spi_send(char cmd, char data, char chip){
 
 	char retv = 0;
 
-	/* Clear Bit 2 (SS) */
-	PORTB &= 0b11111011;
-
+  if(chip == 'A'){
+    /* Clear Bit 2 (SS) */
+    PORTB &= 0b11111011;
+  } else {
+    /* Clear Bit 0 (SS) */
+    PORTB &= 0b11111110;
+  }
 	spi_master_transmit(0x40);
 	spi_master_transmit(cmd);
 	retv = spi_master_transmit(data);
 
-	/* Set Bit 2 (SS) */
-	PORTB |= 0b00000100;
+  if(chip == 'A'){
+    /* Set   Bit 2 (SS) */
+    PORTB |= 0b00000100;
+  } else {
+    /* Set   Bit 0 (SS) */
+    PORTB |= 0b00000001;
+  }
+
 	return retv;
 };
 
-char spi_read(char cmd, char data){
+char spi_read(char cmd, char data, char chip){
 
 	char retv = 0;
 
-	/* Clear Bit 2 (SS) */
-	PORTB &= 0b11111011;
+  if(chip == 'A'){
+    /* Clear Bit 2 (SS) */
+    PORTB &= 0b11111011;
+  } else {
+    /* Clear Bit 0 (SS) */
+    PORTB &= 0b11111110;
+  }
 
 	spi_master_transmit(0x41);
 	spi_master_transmit(cmd);
 	retv = spi_master_transmit(data);
 
-	/* Set Bit 2 (SS) */
-	PORTB |= 0b00000100;
+  if(chip == 'A'){
+    /* Set   Bit 2 (SS) */
+    PORTB |= 0b00000100;
+  } else {
+    /* Set   Bit 0 (SS) */
+    PORTB |= 0b00000001;
+  }
+
 	return retv;
 };
 
@@ -240,21 +328,45 @@ unsigned char swap(unsigned char x){
 	return ((x & 0x0F)<<4 | (x & 0xF0)>>4);
 };
 
-void configure_port_expander(){
+void configure_port_expander_a(){
 	/* IOCON */
-	spi_send(IOCON, 0b01000000);
-	/* IODIRA Port A DDR */
-	spi_send(IODIRA, 0x00);
-	/* IODIRB Port B DDR */
-	spi_send(IODIRB, 0xFF);
-	/* GPPUB Port B pullups */
-	spi_send(GPPUB, 0xFF);
-	/* GPINTENB Interrupt on change */
-	spi_send(GPINTENB, 0b00000001);
-	/* INTCONB Compare DEFVAL=1 or Prev-Val=0 */
-	spi_send(INTCONB, 0b00000001);
+	spi_send(IOCON, 0b01000000, 'A');
+	/* IODIRx Port x DDR */
+	spi_send(IODIRB, 0b10001000, 'A');
+	spi_send(IODIRA, 0b10001000, 'A');
+	/* GPPUx Port x pullups */
+	spi_send(GPPUB, 0b10001000, 'A');
+	spi_send(GPPUA, 0b10001000, 'A');
+	/* GPINTENx Interrupt on change */
+	spi_send(GPINTENB, 0b10001000, 'A');
+	spi_send(GPINTENA, 0b10001000, 'A');
+	/* INTCONx Compare DEFVAL=1 or Prev-Val=0 */
+	spi_send(INTCONB, 0b10001000, 'A');
+	spi_send(INTCONA, 0b10001000, 'A');
 	/* DEFVAL - sets the default val */
-	spi_send(DEFVALB, 0b00000001);
+	spi_send(DEFVALB, 0b10001000, 'A');
+	spi_send(DEFVALA, 0b10001000, 'A');
+
+};
+
+void configure_port_expander_b(){
+	/* IOCON */
+	spi_send(IOCON, 0b01000000, 'B');
+	/* IODIRx Port x DDR */
+	spi_send(IODIRB, 0b00001000, 'B');
+	spi_send(IODIRA, 0b10001000, 'B');
+	/* GPPUx Port x pullups */
+	spi_send(GPPUB, 0b00001000, 'B');
+	spi_send(GPPUA, 0b10001000, 'B');
+	/* GPINTENx Interrupt on change */
+	spi_send(GPINTENB, 0b00001000, 'B');
+	spi_send(GPINTENA, 0b10001000, 'B');
+	/* INTCONx Compare DEFVAL=1 or Prev-Val=0 */
+	spi_send(INTCONB, 0b00001000, 'B');
+	spi_send(INTCONA, 0b10001000, 'B');
+	/* DEFVAL - sets the default val */
+	spi_send(DEFVALB, 0b00001000, 'B');
+	spi_send(DEFVALA, 0b10001000, 'B');
 };
 
 void configure_clock1(const float scaler){
@@ -310,9 +422,37 @@ void configure_clock1(const float scaler){
 
 };
 
+char analog_init(){
+  DDRC &= 0b11111110;
+
+  /* ADMUX - ADC Mulitplexer Selection
+   * [REFS1][REFS0][ADLAR][-][MUX3][MUX2][MUX1][MUX0]
+   */
+  ADMUX = 0b01100000;
+
+  /* ADCSRA - ADC Control and Status Reg
+   * [ADEN][ADSC][ADATE][ADIF][ADIE][ADPS2][ADPS1][ADPS0]
+   * ADEN = Interrupt Enable
+   * ADSC = ADC Start Conversion
+   * ADATE = ADC Auto Trigger Enable
+   * ADIF = ADC Interrupt Flag
+   * ADIE = ADC Interrupt Enable
+   * ADPS = Prescaler Select Bits
+   */
+  ADCSRA = 0b10000111;
+
+  return 1;
+}
+
+unsigned char analog_read(){
+  ADCSRA |= (1 << ADSC);
+  while(ADCSRA & (1 << ADSC));
+
+  return ADCH;
+}
+
 char twi_init(){
 
-	DDRC |= 0b00000001;
 	DDRC &= 0b11001111;
 
 	PORTC |= 0b00110000;
